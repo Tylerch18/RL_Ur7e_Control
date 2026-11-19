@@ -5,15 +5,29 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ur7e-control"
 version = "0.1.0"
-description = "Isaac Lab RL control environments for the Universal Robots UR7e"
+description = "MuJoCo + Gymnasium RL control for the Universal Robots UR7e"
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "mujoco>=3.2.0",
+  "mujoco-menagerie>=2026.11.3",
+  "gymnasium>=1.0.0",
+]
 
 [project.optional-dependencies]
-# Isaac Sim / Isaac Lab are installed by scripts/setup_linux_env.sh
-# (platform-specific NVIDIA wheels). Do not pin them here.
-dev = ["pre-commit"]
+rl = [
+  "torch",
+  "stable-baselines3>=2.3.0",
+  "tensorboard>=2.14",
+]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+ur7e-spawn = "ur7e_control.scripts.spawn:main"
+ur7e-train-reach = "ur7e_control.scripts.train_reach:main"
 
 [tool.setuptools.packages.find]
 where = ["source"]

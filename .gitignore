@@ -1,11 +1,11 @@
-# Isaac Lab / Isaac Sim environments (created on Linux GPU hosts)
-env_isaaclab/
+# Local virtualenvs
 .venv/
 venv/
+env_mujoco/
 
-# Third-party checkouts
-third_party/IsaacLab/
-third_party/Universal_Robots_ROS2_Description/
+# Menagerie / asset caches (downloaded on demand)
+.cache/
+assets/cache/
 
 # Python
 __pycache__/
@@ -22,6 +22,7 @@ outputs/
 runs/
 wandb/
 videos/
+checkpoints/
 
 # OS / IDE
 .DS_Store
@@ -31,4 +32,5 @@ videos/
 
 # Local secrets / caches
 *.log
-.cache/
+.pytest_cache/
+.ruff_cache/

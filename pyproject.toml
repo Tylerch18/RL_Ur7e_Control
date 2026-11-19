@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ur7e-control"
+version = "0.1.0"
+description = "Isaac Lab RL control environments for the Universal Robots UR7e"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+# Isaac Sim / Isaac Lab are installed by scripts/setup_linux_env.sh
+# (platform-specific NVIDIA wheels). Do not pin them here.
+dev = ["pre-commit"]
+
+[tool.setuptools.packages.find]
+where = ["source"]
+
+[tool.setuptools.package-dir]
+"" = "source"

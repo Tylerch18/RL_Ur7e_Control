@@ -1,17 +1,24 @@
 # RL UR7e Control
 
-Cross-platform **MuJoCo + Gymnasium** simulation and RL for the Universal Robots **UR7e**.
+Cross-platform **MuJoCo + Gymnasium** simulation and RL for the Universal Robots **UR7e** with a **Robotiq Hand-E** gripper, plus a **joint-space trajectory tracker** designed for sim-to-real.
 
-Runs on **macOS (Apple Silicon / Intel), Windows, and Linux**. Train locally or over SSH on a remote GPU machine — no Isaac Sim required.
+Runs on **macOS (Apple Silicon / Intel), Windows, and Linux**.
 
-## Why MuJoCo (not Isaac)
+## Finished
 
-| | MuJoCo (this repo) | Isaac Lab / Sim |
-| --- | --- | --- |
-| Mac / Win / Linux laptops | Yes | No Mac |
-| Light install | Yes | Heavy + NVIDIA |
-| Remote headless train | SSH + this env | Possible, heavier |
-| Photoreal vision / RTX | Limited | Strong |
+Completed from the joint-space trajectory / sim-to-real plan:
+
+- [x] Shared trajectory API (`MinJerkTrajectory`, validation, Cartesian stub)
+- [x] `RobotInterface` + `JointTracker` at 500 Hz (clip + rate-limit)
+- [x] `SimUR7e` speedJ-like plant (delay, lag, gain, noise, domain randomization)
+- [x] `RTDEUR7e` real backend (dry-run default; live gated by `--ip` + `--i-am-at-the-robot`)
+- [x] `run_scripted.py` — sim/real runner, NPZ logs, plots, RMS metrics
+- [x] `sysid.py` — fit delay/tau from logs
+- [x] `UR7e-TrajResidual-v0` + `train_residual.py` (PPO / ARS) + `play_residual.py`
+- [x] Pytest coverage + real-robot safety procedure (below)
+- [x] MuJoCo UR7e + Hand-E assets, cross-platform `.venv` setup
+
+**Not done yet (by design):** Cartesian IK trajectories, learned policy on the real arm, fitting sim DR from real hardware logs.
 
 ## Setup
 
@@ -20,46 +27,84 @@ bash scripts/setup_env.sh
 source scripts/activate_env.sh
 ```
 
-Creates `.venv` (Python 3.12), installs MuJoCo + Gymnasium + SB3, and prefetches the Menagerie arm meshes.
-
-## Quick checks
+Optional extras:
 
 ```bash
-# Headless spawn
-python -m ur7e_control.scripts.spawn --headless
-
-# Interactive viewer (on macOS prefer mjpython for the native viewer)
-python -m ur7e_control.scripts.spawn
-# mjpython -m ur7e_control.scripts.spawn
-
-# Random-policy sanity check
-python scripts/random_agent.py
+uv pip install -e ".[rl,dev]"     # PPO + matplotlib
+uv pip install -e ".[real]"       # ur_rtde for a real UR
 ```
 
-## Train
-
-Local or remote (headless):
+## Scripted trajectory tracking (sim)
 
 ```bash
 source scripts/activate_env.sh
-python -m ur7e_control.scripts.train_reach --timesteps 200000 --n-envs 8
+python -m ur7e_control.scripts.run_scripted --backend sim --seed 0
+python -m ur7e_control.scripts.sysid logs/scripted/scripted_sim_seed0.npz
 ```
 
-Remote pattern:
+## Residual RL (sim)
 
 ```bash
-ssh user@gpu-box
-cd RL_Ur7e_Control && source scripts/activate_env.sh
-python -m ur7e_control.scripts.train_reach --timesteps 1_000_000 --n-envs 16
+python -m ur7e_control.scripts.train_residual --timesteps 20000
 ```
 
-## Environment
+Gym id: `UR7e-TrajResidual-v0` — residual joint-velocity on top of the 500 Hz scripted tracker.
 
-- **Gym id:** `UR7e-Reach-v0`
-- **Action:** 6 absolute joint position targets (rad)
-- **Obs:** joint pos/vel (12) + EE xyz + target xyz (18)
-- **Reward:** `-||ee − target||` (+1 on success within 5 cm)
+### What trajectory is that?
 
-## UR7e asset note
+Not a fixed Cartesian path. Each episode samples **4 joint waypoints** near home
+(`home → random → random → home`), connected by **min-jerk quintics**. The policy
+only adds a small velocity residual on top of the scripted tracker (it does **not** choose waypoints).
 
-There is no dedicated Menagerie UR7e MJCF. Official UR7e kinematics match the **UR5e** reach class (850 mm), so we load `universal_robots_ur5e` via `mujoco-menagerie` and label it UR7e. Payload differs (7.5 kg vs 5 kg).
+Visualize a rollout (plots + optional MuJoCo viewer):
+
+```bash
+python -m ur7e_control.scripts.play_residual --model logs/residual/residual_ppo.zip --seed 0
+python -m ur7e_control.scripts.play_residual --baseline --seed 0   # scripted only
+mjpython -m ur7e_control.scripts.play_residual --model logs/residual/residual_ppo.zip --viewer
+```
+
+## Reach env (legacy demo)
+
+- `UR7e-Reach-v0` — EE reach with Hand-E command channel
+
+## Architecture (trajectory)
+
+- `MinJerkTrajectory` — joint waypoints, quintic segments, auto-timed from vel/acc limits
+- `JointTracker` — `qd_cmd = qd_ref + lead*qdd_ref + Kp*(q_ref - q)` (clip + rate-limit)
+- `SimUR7e` — speedJ-like plant (delay, lag, gain, noise, domain randomization)
+- `RTDEUR7e` — real backend via `ur_rtde` (**dry-run by default**)
+
+Control rate: **500 Hz** (`dt = 0.002`).
+
+## Real-robot safety procedure
+
+**Do not run learned policies on hardware until the scripted baseline is clean.**
+
+1. Verify the exact trajectory in sim with the **same** velocity/acceleration caps you will use on the arm:
+   ```bash
+   python -m ur7e_control.scripts.run_scripted --backend sim --offset-scale 0.15
+   ```
+2. On the real network, start with **dry-run** (default — no motion):
+   ```bash
+   python -m ur7e_control.scripts.run_scripted --backend real --ip 192.168.x.x
+   ```
+3. Live motion requires **both** `--ip` and `--i-am-at-the-robot` (and `--live`):
+   ```bash
+   python -m ur7e_control.scripts.run_scripted \
+     --backend real --ip 192.168.x.x --i-am-at-the-robot --live \
+     --offset-scale 0.1
+   ```
+4. First runs use safe caps (~0.4 rad/s, ~1 rad/s²) and small offsets from home.
+5. The backend `moveJ`s to the trajectory start and **refuses** to stream if `|q_actual − q_start|` is large.
+6. Abort (`speedStop`) on tracking error, missed RTDE period, or any exception; always stop in `finally`.
+7. Log full-rate NPZ (`t, q_ref, qd_ref, q, qd, qd_cmd`) and run `sysid.py` before trusting sim DR ranges.
+
+## Assets
+
+- **Arm:** Menagerie `universal_robots_ur5e` (same nominal kinematics as UR7e; do **not** trust mesh inertias for dynamics).
+- **Gripper:** `assets/robotiq_hande/` (BSD-3-Clause).
+
+## Do not commit
+
+`logs/`, `.venv/`, `MUJOCO_LOG.TXT`, checkpoints — see `.gitignore`. **Do** commit vendored Hand-E assets.

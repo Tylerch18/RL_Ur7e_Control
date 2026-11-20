@@ -16,13 +16,14 @@ dist/
 build/
 *.egg
 
-# Training outputs
+# Training / runtime outputs (do not commit)
 logs/
 outputs/
 runs/
 wandb/
 videos/
 checkpoints/
+MUJOCO_LOG.TXT
 
 # OS / IDE
 .DS_Store
@@ -34,3 +35,6 @@ checkpoints/
 *.log
 .pytest_cache/
 .ruff_cache/
+
+# Keep vendored sim assets (e.g. assets/robotiq_hande/) — those should be committed.
+# Menagerie downloads live in the user cache (~/.cache/mujoco_menagerie), not this repo.

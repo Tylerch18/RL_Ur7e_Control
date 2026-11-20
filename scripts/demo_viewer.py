@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive UR7e demo: hold a red target and track it with joint PD ctrl.
+"""Interactive UR7e + Hand-E demo.
 
 On macOS run with mjpython:
   mjpython scripts/demo_viewer.py
@@ -13,28 +13,33 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
-from ur7e_control.assets import HOME_QPOS, load_ur7e_model
+from ur7e_control.assets import (
+    ARM_DOF,
+    ARM_HOME_QPOS,
+    GRIPPER_CTRL_CLOSED,
+    GRIPPER_CTRL_OPEN,
+    apply_home,
+    load_ur7e_model,
+)
 
 
 def main() -> None:
-    model = load_ur7e_model(with_target=True)
+    model = load_ur7e_model(with_target=True, with_gripper=True)
     data = mujoco.MjData(model)
+    apply_home(model, data, gripper_ctrl=GRIPPER_CTRL_OPEN)
 
-    data.qpos[:6] = HOME_QPOS
-    data.ctrl[:] = HOME_QPOS
     mocap_id = int(model.body_mocapid[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "target")])
     data.mocap_pos[mocap_id] = np.array([0.45, 0.15, 0.35])
     mujoco.mj_forward(model, data)
 
-    print("UR7e MuJoCo demo — close the window to quit.")
-    print("The red sphere is the reach target; the arm tracks moving joint setpoints.")
+    print("UR7e + Hand-E demo — close the window to quit.")
+    print("Arm moves around home; Hand-E opens/closes; red sphere is the reach target.")
 
     t0 = time.time()
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
             t = time.time() - t0
-            # Slow joint setpoints around home so the arm visibly moves.
-            data.ctrl[:] = HOME_QPOS + 0.35 * np.array(
+            data.ctrl[:ARM_DOF] = ARM_HOME_QPOS + 0.35 * np.array(
                 [
                     np.sin(0.6 * t),
                     0.4 * np.sin(0.45 * t + 0.5),
@@ -44,7 +49,10 @@ def main() -> None:
                     np.sin(0.9 * t + 0.3),
                 ]
             )
-            # Orbit the target slowly in front of the arm.
+            # Open/close the Hand-E (0=open, 255=closed).
+            phase = 0.5 * (1.0 + np.sin(0.7 * t))
+            data.ctrl[ARM_DOF] = GRIPPER_CTRL_OPEN + phase * (GRIPPER_CTRL_CLOSED - GRIPPER_CTRL_OPEN)
+
             data.mocap_pos[mocap_id] = np.array(
                 [
                     0.45 + 0.12 * np.cos(0.35 * t),

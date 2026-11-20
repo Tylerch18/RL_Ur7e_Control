@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ur7e-control"
 version = "0.1.0"
-description = "MuJoCo + Gymnasium RL control for the Universal Robots UR7e"
+description = "MuJoCo + Gymnasium RL / sim-to-real control for the Universal Robots UR7e"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,13 +21,21 @@ rl = [
   "stable-baselines3>=2.3.0",
   "tensorboard>=2.14",
 ]
+real = [
+  "ur-rtde>=1.5.0",
+]
 dev = [
   "pytest>=8.0",
+  "matplotlib>=3.8",
 ]
 
 [project.scripts]
 ur7e-spawn = "ur7e_control.scripts.spawn:main"
 ur7e-train-reach = "ur7e_control.scripts.train_reach:main"
+ur7e-run-scripted = "ur7e_control.scripts.run_scripted:main"
+ur7e-sysid = "ur7e_control.scripts.sysid:main"
+ur7e-train-residual = "ur7e_control.scripts.train_residual:main"
+ur7e-play-residual = "ur7e_control.scripts.play_residual:main"
 
 [tool.setuptools.packages.find]
 where = ["source"]

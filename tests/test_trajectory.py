@@ -76,3 +76,62 @@ def test_residual_env_api_and_zero_action():
         if terminated or truncated:
             break
     env.close()
+
+
+def test_playback_holds_policy_actions_at_training_rate():
+    from ur7e_control.envs.trajectory import INNER_STEPS
+    from ur7e_control.scripts.play_residual import _rollout
+
+    traj = MinJerkTrajectory(np.vstack([HOME_Q, HOME_Q + 0.1, HOME_Q]))
+    observations = []
+
+    def policy(obs):
+        observations.append(obs.copy())
+        return np.full(6, 0.1)
+
+    log = _rollout(
+        traj, policy=policy, plant=SimPlantParams(meas_noise_std=0.0),
+        kp=8.0, visualize=False,
+    )
+    samples = len(log.as_arrays()["t"])
+    assert len(observations) == (samples + INNER_STEPS - 1) // INNER_STEPS
+    phases = np.array([obs[-1] for obs in observations])
+    np.testing.assert_allclose(np.diff(phases) * traj.duration, 0.02, atol=1e-6)
+    np.testing.assert_allclose(observations[0][24:30], 0.0)
+    np.testing.assert_allclose(observations[1][24:30], 0.1)
+
+
+def test_comparison_uses_the_viewer_tcp_and_draws_synchronized_markers():
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import mujoco
+
+    from ur7e_control.assets import apply_home, ee_xpos, load_ur7e_model
+    from ur7e_control.scripts.trajectory_visualization import TrajectoryOverlay, tcp_positions
+
+    model = load_ur7e_model(with_target=False)
+    data = mujoco.MjData(model)
+    apply_home(model, data)
+    actual_q = HOME_Q + np.array([0.1, -0.1, 0.05, 0.0, 0.0, 0.0])
+    data.qpos[:6] = actual_q
+    mujoco.mj_forward(model, data)
+    actual_tcp = ee_xpos(model, data)
+    np.testing.assert_allclose(tcp_positions([actual_q], model)[0], actual_tcp)
+
+    texts = []
+    viewer = SimpleNamespace(
+        lock=nullcontext, user_scn=mujoco.MjvScene(model, maxgeom=1000),
+        set_texts=texts.append,
+    )
+    traj = MinJerkTrajectory(np.vstack([HOME_Q, actual_q, HOME_Q]))
+    overlay = TrajectoryOverlay(model, traj)
+    overlay.update(viewer, HOME_Q, actual_q, 0.0)
+    reference_tcp = tcp_positions([HOME_Q], model)[0]
+    np.testing.assert_allclose(viewer.user_scn.geoms[viewer.user_scn.ngeom - 2].pos, reference_tcp, atol=1e-7)
+    np.testing.assert_allclose(viewer.user_scn.geoms[viewer.user_scn.ngeom - 1].pos, actual_tcp, atol=1e-7)
+    assert np.isfinite([geom.pos for geom in viewer.user_scn.geoms[:viewer.user_scn.ngeom]]).all()
+    expected_error = np.linalg.norm(actual_tcp - reference_tcp) * 1000
+    assert f"{expected_error:.2f} mm" in texts[-1][-1]
+    overlay.reset()
+    assert overlay.trail == []

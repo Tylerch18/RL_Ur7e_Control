@@ -64,6 +64,24 @@ python -m ur7e_control.scripts.play_residual --baseline --seed 0   # scripted on
 mjpython -m ur7e_control.scripts.play_residual --model logs/residual/residual_ppo.zip --viewer
 ```
 
+Compare the desired trajectory with PPO's executed motion in the viewer:
+
+```powershell
+.\.venv\Scripts\python.exe -m ur7e_control.scripts.play_residual --viewer --loop --speed 0.25 --seed 0
+```
+
+The orange dashed path is the reference; the blue trail is the scripted tracker
+plus PPO's residual correction. Moving markers show the desired and actual
+Hand-E tip at the same instant, with the TCP distance error displayed in mm.
+PPO runs at 50 Hz while the tracker runs at 500 Hz. `--speed` changes playback
+timing only. Close the viewer to finish.
+
+A headless run saves `logs/play/play_residual_seed0.png` (3D and top-view TCP
+paths with tracking errors), `play_residual_seed0_joints.png` (six joint angle
+comparisons), and the NPZ samples. These comparisons use the MuJoCo Hand-E TCP
+in world coordinates, matching the viewer. The reference is generated from
+joint waypoints, rather than recorded demonstrations.
+
 ## Reach env (legacy demo)
 
 - `UR7e-Reach-v0` — EE reach with Hand-E command channel

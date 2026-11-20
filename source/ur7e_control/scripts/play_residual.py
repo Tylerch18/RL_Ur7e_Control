@@ -15,11 +15,11 @@ from pathlib import Path
 import numpy as np
 
 from ur7e_control.backends.sim_ur7e import SimPlantParams, SimUR7e
-from ur7e_control.control.fk import fk_position
 from ur7e_control.control.limits import CONTROL_DT, HOME_Q
 from ur7e_control.control.logging import TrajectoryLogger
 from ur7e_control.control.tracker import JointTracker
-from ur7e_control.envs.trajectory import RESIDUAL_SCALE
+from ur7e_control.envs.trajectory import INNER_STEPS, RESIDUAL_SCALE
+from ur7e_control.scripts.trajectory_visualization import TrajectoryOverlay, plot_comparison
 from ur7e_control.trajectory.min_jerk import MinJerkTrajectory, random_waypoints_near_home
 
 
@@ -54,7 +54,11 @@ def _rollout(
     plant: SimPlantParams,
     kp: float,
     visualize: bool,
+    speed: float = 1.0,
+    loop: bool = False,
 ) -> TrajectoryLogger:
+    if speed <= 0 or not np.isfinite(speed):
+        raise ValueError("speed must be finite and greater than zero")
     robot = SimUR7e(q0=traj.waypoints[0], params=plant, visualize=visualize)
     tracker = JointTracker(kp=kp)
     tracker.reset()
@@ -63,109 +67,67 @@ def _rollout(
     t = 0.0
     n_steps = int(np.ceil(traj.duration / CONTROL_DT)) + 1
     viewer = None
+    overlay = None
     if visualize:
         import mujoco
         import mujoco.viewer
 
         assert robot._model is not None and robot._data is not None
         viewer = mujoco.viewer.launch_passive(robot._model, robot._data)
+        overlay = TrajectoryOverlay(
+            robot._model, traj, actual_label="PPO + tracker" if policy is not None else "Scripted tracker",
+        )
 
     try:
-        for _ in range(n_steps):
-            q, qd = robot.read()
-            q_ref, qd_ref, qdd_ref = traj.sample(t)
+        while True:
+            robot.reset(traj.waypoints[0])
+            tracker.reset()
+            logger = TrajectoryLogger()
+            prev_a = np.zeros(6)
+            t = 0.0
             residual = None
-            if policy is not None:
-                obs = _obs(q, qd, q_ref, qd_ref, qdd_ref, prev_a, t, traj.duration)
-                action = np.clip(policy(obs), -1.0, 1.0)
-                residual = action * RESIDUAL_SCALE
-                prev_a = action
-            qd_cmd = tracker.compute(q, q_ref, qd_ref, qdd_ref, residual_qd=residual)
-            step_start = time.time()
-            robot.command_velocity(qd_cmd)
-            logger.record(t, q_ref, qd_ref, q, qd, qd_cmd)
-            if viewer is not None:
-                viewer.sync()
-                leftover = CONTROL_DT - (time.time() - step_start)
-                if leftover > 0:
-                    time.sleep(leftover)
-            t += CONTROL_DT
-            if t > traj.duration:
+            if overlay is not None:
+                overlay.reset()
+            for step in range(n_steps):
+                if viewer is not None and not viewer.is_running():
+                    break
+                step_start = time.perf_counter()
+                q, qd = robot.read()
+                q_ref, qd_ref, qdd_ref = traj.sample(t)
+                # Hold each action for ten control ticks, as in training.
+                if policy is not None and step % INNER_STEPS == 0:
+                    obs = _obs(q, qd, q_ref, qd_ref, qdd_ref, prev_a, t, traj.duration)
+                    action = np.clip(policy(obs), -1.0, 1.0)
+                    residual = action * RESIDUAL_SCALE
+                    prev_a = action
+                qd_cmd = tracker.compute(q, q_ref, qd_ref, qdd_ref, residual_qd=residual)
+                robot.command_velocity(qd_cmd)
+                logger.record(t, q_ref, qd_ref, q, qd, qd_cmd)
+                if viewer is not None:
+                    next_t = min(t + CONTROL_DT, traj.duration)
+                    next_ref, _, _ = traj.sample(next_t)
+                    overlay.update(viewer, next_ref, robot.q, next_t)
+                    viewer.sync()
+                    leftover = CONTROL_DT / speed - (time.perf_counter() - step_start)
+                    if leftover > 0:
+                        time.sleep(leftover)
+                t += CONTROL_DT
+                if t > traj.duration:
+                    break
+            if not loop or viewer is None or not viewer.is_running():
                 break
     finally:
         robot.stop()
         if viewer is not None:
             # Leave the final pose visible briefly, then close.
-            time.sleep(1.0)
+            if viewer.is_running():
+                time.sleep(1.0)
             viewer.close()
     return logger
 
 
 def _plot(log: TrajectoryLogger, waypoints: np.ndarray, out: Path, title: str) -> Path:
-    # mjpython / MuJoCo viewer leaves us off the Cocoa main thread; use Agg.
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    data = log.as_arrays()
-    t = data["t"]
-    q_ref, q = data["q_ref"], data["q"]
-    err = q - q_ref
-
-    # Cartesian path of the reference (DH FK) for intuition.
-    xyz_ref = np.array([fk_position(qi) for qi in q_ref])
-    xyz = np.array([fk_position(qi) for qi in q])
-
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
-    fig.suptitle(title)
-
-    ax = axes[0, 0]
-    for j in range(6):
-        ax.plot(t, q_ref[:, j], "--", alpha=0.7, label=f"ref j{j}" if j < 3 else None)
-        ax.plot(t, q[:, j], alpha=0.9, label=f"q j{j}" if j < 3 else None)
-    ax.set_ylabel("q (rad)")
-    ax.set_title("Joint trajectory (ref dashed)")
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=7, ncol=2)
-
-    ax = axes[0, 1]
-    for j in range(6):
-        ax.plot(t, err[:, j], label=f"j{j}")
-    ax.set_ylabel("q error (rad)")
-    ax.set_title(f"Tracking error  RMS={log.rms_tracking_error():.4f}")
-    ax.legend(ncol=6, fontsize=7)
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[1, 0]
-    ax.plot(xyz_ref[:, 0], xyz_ref[:, 1], "--", label="ref XY")
-    ax.plot(xyz[:, 0], xyz[:, 1], label="actual XY")
-    ax.scatter(xyz_ref[0, 0], xyz_ref[0, 1], c="g", s=40, zorder=5, label="start")
-    ax.scatter(xyz_ref[-1, 0], xyz_ref[-1, 1], c="r", s=40, zorder=5, label="end")
-    ax.set_xlabel("x (m)")
-    ax.set_ylabel("y (m)")
-    ax.set_title("Flange path (top view)")
-    ax.axis("equal")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    ax = axes[1, 1]
-    ax.plot(t, xyz_ref[:, 2], "--", label="ref z")
-    ax.plot(t, xyz[:, 2], label="actual z")
-    ax.set_xlabel("t (s)")
-    ax.set_ylabel("z (m)")
-    ax.set_title("Flange height")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    fig.tight_layout()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=130)
-    plt.close(fig)
-
-    # Also dump waypoints for clarity.
-    np.savez(out.with_suffix(".npz"), **data, waypoints=waypoints)
-    return out
+    return plot_comparison(log, waypoints, out, title)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -177,7 +139,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--kp", type=float, default=8.0)
     p.add_argument("--outdir", type=Path, default=Path("logs/play"))
     p.add_argument("--viewer", action="store_true", help="MuJoCo passive viewer (use mjpython on macOS)")
+    p.add_argument("--speed", type=float, default=1.0, help="Viewer playback speed (0.25 = quarter speed)")
+    p.add_argument("--loop", action="store_true", help="Repeat the trajectory until the viewer is closed")
     args = p.parse_args(argv)
+    if args.speed <= 0 or not np.isfinite(args.speed):
+        p.error("--speed must be finite and greater than zero")
+    if args.loop and not args.viewer:
+        p.error("--loop requires --viewer")
 
     rng = np.random.default_rng(args.seed)
     waypoints = random_waypoints_near_home(
@@ -187,7 +155,7 @@ def main(argv: list[str] | None = None) -> None:
     # Fixed mild plant so plots are comparable.
     plant = SimPlantParams(delay_s=0.006, tau_s=0.025, gain=np.ones(6), meas_noise_std=0.0)
 
-    print("Trajectory: 4 joint-space waypoints (home → 2 random offsets → home)")
+    print("Trajectory: 4 joint-space waypoints (home -> 2 random offsets -> home)")
     print("  interpolated with rest-to-rest min-jerk quintics")
     print(f"  duration={traj.duration:.2f}s  offset_scale={args.offset_scale}  seed={args.seed}")
     print("Waypoints q (rad):")
@@ -198,11 +166,19 @@ def main(argv: list[str] | None = None) -> None:
     if policy is None and not args.baseline:
         print(f"Model not found at {args.model}; running baseline (zero residual).")
     label = "baseline" if policy is None else "residual"
-    log = _rollout(traj, policy=policy, plant=plant, kp=args.kp, visualize=args.viewer)
+    controller_label = "scripted tracker" if policy is None else "PPO + tracker"
+    print(f"Orange dashed: reference | Blue: {controller_label} | paths at Hand-E tip")
+    if args.loop:
+        print("Repeating trajectory; close the viewer window to quit.")
+    log = _rollout(
+        traj, policy=policy, plant=plant, kp=args.kp, visualize=args.viewer,
+        speed=args.speed, loop=args.loop,
+    )
     out = args.outdir / f"play_{label}_seed{args.seed}.png"
-    path = _plot(log, waypoints, out, title=f"UR7e joint traj — {label} (seed={args.seed})")
+    path = _plot(log, waypoints, out, title=f"Reference vs {controller_label} (seed={args.seed})")
     print(f"RMS tracking error: {log.rms_tracking_error():.6f} rad")
     print(f"saved {path}")
+    print(f"saved {path.with_stem(path.stem + '_joints')}")
     print(f"saved {path.with_suffix('.npz')}")
 
 

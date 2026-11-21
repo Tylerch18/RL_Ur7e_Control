@@ -1,0 +1,17 @@
+joint_state_node:
+  ros__parameters:
+    input_topic: /joint_states
+    output_topic: /ur7e/arm_state
+    joint_names:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+
+policy_node:
+  ros__parameters:
+    state_topic: /ur7e/arm_state
+    command_topic: /forward_velocity_controller/commands
+    model_path: ""
